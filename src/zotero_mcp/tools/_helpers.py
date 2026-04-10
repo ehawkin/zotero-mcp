@@ -15,15 +15,16 @@ from zotero_mcp import utils as _utils
 # Pagination helper
 # ---------------------------------------------------------------------------
 
-def _paginate(zot_method, *args, max_items=None, **kwargs):
+def _paginate(zot_method, *args, max_items=None, start_offset=0, **kwargs):
     """Fetch all results from a pyzotero method using manual pagination.
 
     Avoids zot.everything() which can cause RLock pickling in MCP contexts.
     Accepts the same positional and keyword arguments as the wrapped method,
-    plus an optional max_items to cap the total results.
+    plus an optional max_items to cap the total results and start_offset to
+    skip ahead into the result set.
     """
     items = []
-    start = 0
+    start = start_offset
     page_size = 100
     while True:
         batch = zot_method(*args, start=start, limit=page_size, **kwargs)

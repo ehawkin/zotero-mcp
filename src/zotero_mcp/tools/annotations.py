@@ -13,6 +13,13 @@ from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
 
+try:
+    _MAX_ANNOTATION_LIMIT = int(os.environ.get("ZOTERO_MCP_ANNOTATION_LIMIT", "300"))
+    if _MAX_ANNOTATION_LIMIT < 1:
+        _MAX_ANNOTATION_LIMIT = 300
+except (ValueError, TypeError):
+    _MAX_ANNOTATION_LIMIT = 300
+
 _WEB_API_ENV_VARS = (
     "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
     "- ZOTERO_LIBRARY_ID: Your library ID\n"
@@ -45,12 +52,28 @@ def _get_note_write_client(op_description: str):
 
 @mcp.tool(
     name="zotero_get_annotations",
-    description="Get all annotations for a specific item or across your entire Zotero library. When called without item_key, returns ALL annotations library-wide — this can be very large. Always pass item_key when you know which item you want."
+    description=(
+        "Get annotations from your Zotero library. "
+        "With item_key: returns ALL annotations for that specific item (no limit applied). "
+        "Without item_key: returns annotations library-wide. "
+        "The default is 100 annotations per request. You may request more by setting "
+        "the limit parameter, up to the server's configured maximum. "
+        "IMPORTANT: Each annotation includes full text, comments, color, tags, and page "
+        "data — large responses consume significant context window space. "
+        "If the user asks for more than 200 annotations, confirm with them first and "
+        "explain that it will use a large portion of the conversation's context window. "
+        "To retrieve large sets efficiently, use the offset parameter to page through "
+        "results (e.g., first call with limit=100, next call with offset=100, limit=100) "
+        "rather than requesting everything at once. "
+        "The response footer will tell you if more annotations are available beyond "
+        "what was returned."
+    )
 )
 def get_annotations(
     item_key: str | None = None,
     use_pdf_extraction: bool = False,
     limit: int | str | None = None,
+    offset: int = 0,
     *,
     ctx: Context
 ) -> str:
@@ -61,6 +84,7 @@ def get_annotations(
         item_key: Optional Zotero item key/ID to filter annotations by parent item
         use_pdf_extraction: Whether to attempt direct PDF extraction as a fallback
         limit: Maximum number of annotations to return
+        offset: Number of annotations to skip (for paging through library-wide results)
         ctx: MCP context
 
     Returns:
@@ -304,13 +328,15 @@ def get_annotations(
             annotations = better_bibtex_annotations + zotero_api_annotations + pdf_annotations
 
         else:
-            # Retrieve all annotations in the library
-            limit = _helpers._normalize_limit(limit, default=100)
-            # Use _paginate helper instead of inline manual pagination
-            annotations = _helpers._paginate(zot.items, max_items=limit, itemType="annotation")
+            # Retrieve annotations library-wide with configurable ceiling
+            offset = max(0, offset)
+            limit = _helpers._normalize_limit(limit, default=100, max_val=_MAX_ANNOTATION_LIMIT)
+            annotations = _helpers._paginate(zot.items, max_items=limit, start_offset=offset, itemType="annotation")
 
         # Handle no annotations found
         if not annotations:
+            if offset > 0:
+                return f"No annotations found at offset {offset}. Try a smaller offset or start from offset=0."
             return f"No annotations found{f' for item: {parent_title}' if item_key else ''}."
 
         # Batch-resolve parent titles for library-wide retrieval (Fix 2+5)
@@ -412,6 +438,10 @@ def get_annotations(
                 result,
                 "Pass item_key to get annotations for a specific item instead of library-wide."
             )
+            # Pagination footer for library-wide queries
+            result += f"\n\n---\nShowing annotations {offset + 1}\u2013{offset + len(annotations)}."
+            if len(annotations) == limit:
+                result += f" More may be available \u2014 use offset={offset + len(annotations)} to see the next page."
         return result
 
     except Exception as e:
@@ -725,7 +755,7 @@ def search_notes(
 
     ctx.info(f"Searching Zotero notes for '{query}'")
 
-    limit = _helpers._normalize_limit(limit, default=20)
+    limit = _helpers._normalize_limit(limit, default=20, max_val=_MAX_ANNOTATION_LIMIT)
 
     note_results: list[dict] = []
     annotation_results: list[dict] = []
